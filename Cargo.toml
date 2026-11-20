@@ -1,13 +1,18 @@
 [package]
-name = "slashpick"
+name = "pico"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rdev = "0.5"     # global keyboard listener
-enigo = "0.3"    # simulate backspace + typing the chosen icon
-tao = "0.34"     # window
-wry = "0.52"     # OS webview (renders emoji with the system's color emoji font)
+rdev = "0.5"
+enigo = "0.3"
+tao = "0.34"
+wry = "0.52"
+tray-icon = "0.26.1"
+image = { version = "0.25", default-features = false, features = ["ico"] }
+
+[build-dependencies]
+winres = "0.1.12"
 
 [profile.release]
 opt-level = 3
