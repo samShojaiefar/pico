@@ -1,12 +1,14 @@
-
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
     env,
     error::Error,
-    io::Write,
-    process::Command,
-    sync::atomic::{AtomicBool, Ordering},
+    io::{BufRead, BufReader, Write},
+    process::{ChildStdin, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -16,14 +18,14 @@ use rdev::{listen, EventType, Key as K};
 use tao::{
     dpi::{LogicalPosition, LogicalSize},
     event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
-    window::WindowBuilder,
+    event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopWindowTarget},
+    window::{Window, WindowBuilder},
 };
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     Icon, TrayIconBuilder,
 };
-use wry::WebViewBuilder;
+use wry::{WebView, WebViewBuilder};
 
 mod emoji;
 mod state;
@@ -34,7 +36,16 @@ use state::State;
 
 static BUSY: AtomicBool = AtomicBool::new(false);
 
+// Pipe to the long-lived picker process.
+static PICKER_IN: Mutex<Option<ChildStdin>> = Mutex::new(None);
+
+// Number of trigger characters to erase after a pick.
+static ERASE: AtomicUsize = AtomicUsize::new(0);
+
 const DOUBLE_TAP: Duration = Duration::from_millis(400);
+
+// Ignore focus loss for this long after the picker opens.
+const FOCUS_GRACE: Duration = Duration::from_millis(400);
 
 const OPEN_PICKER_ID: &str = "open-picker";
 const HELP_ID: &str = "how-it-works";
@@ -67,13 +78,9 @@ fn load_tray_icon() -> Result<Icon, Box<dyn Error>> {
 // ───────────────────────────── main ─────────────────────────────
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Picker subprocess mode.
-    // This process does not create another tray icon.
+    // Picker subprocess mode (long-lived, hidden until opened).
     if env::args().any(|a| a == "--picker") {
-        let prefix = arg_value("--prefix")
-            .unwrap_or_else(|| "/".to_string());
-
-        return run_picker(&prefix);
+        return run_picker();
     }
 
     // Welcome screen subprocess mode.
@@ -133,6 +140,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .with_tooltip("Pico - Emoji Picker")
         .with_menu(Box::new(menu))
         .build()?;
+
+    // Start the picker once, hidden. Opening it later is just a show().
+    spawn_picker();
 
     // Run global keyboard listener in the background.
     thread::spawn(move || {
@@ -306,9 +316,64 @@ fn fire(erase: usize, prefix: String) {
         return;
     }
 
-    // Never block the keyboard hook.
+    ERASE.store(erase, Ordering::SeqCst);
+
+    let msg = format!("open {prefix}\n");
+
+    let mut guard = PICKER_IN.lock().unwrap();
+
+    if guard.is_none() {
+        drop(guard);
+        spawn_picker();
+        guard = PICKER_IN.lock().unwrap();
+    }
+
+    let sent = match guard.as_mut() {
+        Some(stdin) => stdin
+            .write_all(msg.as_bytes())
+            .and_then(|_| stdin.flush())
+            .is_ok(),
+        None => false,
+    };
+
+    if !sent {
+        *guard = None;
+        BUSY.store(false, Ordering::SeqCst);
+    }
+}
+
+fn spawn_picker() {
+    let Ok(exe) = env::current_exe() else { return };
+
+    let Ok(mut child) = Command::new(exe)
+        .arg("--picker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+    else {
+        return;
+    };
+
+    *PICKER_IN.lock().unwrap() = child.stdin.take();
+
+    if let Some(out) = child.stdout.take() {
+        thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(Result::ok) {
+                handle_picker_reply(&line);
+            }
+
+            // Picker exited: forget the pipe so the next open respawns it.
+            *PICKER_IN.lock().unwrap() = None;
+        });
+    }
+}
+
+fn handle_picker_reply(reply: &str) {
+    let erase = ERASE.load(Ordering::SeqCst);
+    let reply = reply.to_string();
+
     thread::spawn(move || {
-        if let Err(e) = pick_and_insert(erase, &prefix) {
+        if let Err(e) = insert(erase, &reply) {
             eprintln!("pico: {e}");
         }
 
@@ -317,23 +382,10 @@ fn fire(erase: usize, prefix: String) {
     });
 }
 
-fn pick_and_insert(
-    erase: usize,
-    prefix: &str,
-) -> Result<(), Box<dyn Error>> {
-    let out = Command::new(env::current_exe()?)
-        .arg("--picker")
-        .arg("--prefix")
-        .arg(prefix)
-        .output()?;
-
-    let reply = String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .to_string();
-
+fn insert(erase: usize, reply: &str) -> Result<(), Box<dyn Error>> {
     // "pick:<emoji>" inserts the emoji.
     // "cancel" removes the trigger without inserting anything.
-    // Anything else leaves the text field untouched.
+    // Anything else (including an empty reply) leaves the text field untouched.
     let glyph = reply.strip_prefix("pick:");
 
     if glyph.is_none() && reply != "cancel" {
@@ -385,11 +437,24 @@ fn build_html(prefix: &str, state: &State) -> String {
         .replace("__PREFIX__", &js_str(prefix))
 }
 
-fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
+fn run_picker() -> Result<(), Box<dyn Error>> {
     let event_loop: EventLoop<String> =
         EventLoopBuilder::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
+
+    // Commands from the main process ("open <prefix>").
+    // When stdin closes, the main process is gone, so quit.
+    let stdin_proxy = event_loop.create_proxy();
+    thread::spawn(move || {
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            if let Some(prefix) = line.strip_prefix("open ") {
+                let _ = stdin_proxy.send_event(format!("open:{prefix}"));
+            }
+        }
+
+        let _ = stdin_proxy.send_event("quit".to_string());
+    });
 
     let window = WindowBuilder::new()
         .with_title("pico")
@@ -398,24 +463,13 @@ fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
         .with_transparent(true)
         .with_always_on_top(true)
         .with_resizable(false)
+        .with_visible(false)
         .build(&event_loop)?;
-
-    // Horizontally centered, in the upper part of the screen.
-    if let Some(m) = event_loop.primary_monitor() {
-        let scale = m.scale_factor();
-        let size = m.size().to_logical::<f64>(scale);
-        let pos = m.position().to_logical::<f64>(scale);
-
-        window.set_outer_position(LogicalPosition::new(
-            pos.x + (size.width - WIN_W) / 2.0,
-            pos.y + size.height * 0.22,
-        ));
-    }
 
     let mut state = State::load();
 
     let builder = WebViewBuilder::new()
-        .with_html(build_html(prefix, &state))
+        .with_html(build_html("/", &state))
         .with_transparent(true)
         .with_ipc_handler(move |req: wry::http::Request<String>| {
             let _ = proxy.send_event(req.body().clone());
@@ -433,18 +487,23 @@ fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
         builder.build_gtk(vbox)?
     };
 
-    window.set_focus();
-
     let mut had_focus = false;
+    let mut shown_at = Instant::now();
 
-    event_loop.run(move |event, _, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         let _keep_alive = &webview;
 
         match event {
             Event::UserEvent(msg) => {
-                if let Some(list) = msg.strip_prefix("favs:") {
+                if let Some(prefix) = msg.strip_prefix("open:") {
+                    show(&window, target, &webview, prefix);
+                    had_focus = false;
+                    shown_at = Instant::now();
+                } else if msg == "quit" {
+                    *control_flow = ControlFlow::Exit;
+                } else if let Some(list) = msg.strip_prefix("favs:") {
                     let favs: Vec<&str> = list
                         .split('|')
                         .filter(|s| !s.is_empty())
@@ -456,15 +515,9 @@ fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
                     state.record_use(g);
                     state.save();
 
-                    print!("pick:{g}");
-                    let _ = std::io::stdout().flush();
-
-                    *control_flow = ControlFlow::Exit;
+                    hide(&window, &mut had_focus, &format!("pick:{g}"));
                 } else if msg == "cancel" {
-                    print!("cancel");
-                    let _ = std::io::stdout().flush();
-
-                    *control_flow = ControlFlow::Exit;
+                    hide(&window, &mut had_focus, "cancel");
                 }
             }
 
@@ -474,9 +527,9 @@ fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
             } => {
                 if focused {
                     had_focus = true;
-                } else if had_focus {
+                } else if had_focus && shown_at.elapsed() > FOCUS_GRACE {
                     // Clicked away: leave the text field untouched.
-                    *control_flow = ControlFlow::Exit;
+                    hide(&window, &mut had_focus, "");
                 }
             }
 
@@ -484,12 +537,47 @@ fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                *control_flow = ControlFlow::Exit;
+                hide(&window, &mut had_focus, "");
             }
 
             _ => {}
         }
     })
+}
+
+fn show(
+    window: &Window,
+    target: &EventLoopWindowTarget<String>,
+    webview: &WebView,
+    prefix: &str,
+) {
+    // Horizontally centered, in the upper part of the screen.
+    if let Some(m) = target.primary_monitor() {
+        let scale = m.scale_factor();
+        let size = m.size().to_logical::<f64>(scale);
+        let pos = m.position().to_logical::<f64>(scale);
+
+        window.set_outer_position(LogicalPosition::new(
+            pos.x + (size.width - WIN_W) / 2.0,
+            pos.y + size.height * 0.22,
+        ));
+    }
+
+    // Reset the search box and category for this open.
+    let _ = webview.evaluate_script(&format!("picoReset({})", js_str(prefix)));
+
+    window.set_visible(true);
+    window.set_focus();
+}
+
+/// Hides the picker and tells the main process how it closed.
+/// `reply` is "pick:<emoji>", "cancel", or "" (nothing to insert).
+fn hide(window: &Window, had_focus: &mut bool, reply: &str) {
+    *had_focus = false;
+    window.set_visible(false);
+
+    println!("{reply}");
+    let _ = std::io::stdout().flush();
 }
 
 // ───────────────────────────── HTML ─────────────────────────────
@@ -765,7 +853,7 @@ const HTML: &str = r##"
 <script>
   const DATA = __DATA__;
   const STATE = __STATE__;
-  const PREFIX = __PREFIX__;
+  let PREFIX = __PREFIX__;
 
   const COLS = 3;
 
@@ -1124,6 +1212,18 @@ const HTML: &str = r##"
       render();
     }
   });
+
+  // Called by the host each time the picker is shown.
+  window.picoReset = p => {
+    PREFIX = p;
+    qEl.value = '';
+    sel = 0;
+    selGlyph = null;
+    catIdx = FAVS.length ? 0 : 1;
+    $('pfx').textContent = PREFIX;
+    render();
+    qEl.focus();
+  };
 
   render();
   qEl.focus();
