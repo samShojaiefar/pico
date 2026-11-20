@@ -11,7 +11,7 @@ pub const EMOJIS: &[Emoji] = &[
 
     // Status
     Emoji { glyph: "✅", name: "check done ok yes success", cat: "Status" },
-    Emoji { glyph: "❌", name: "cross no fail error", cat: "Status" },
+    Emoji { glyph: "❌", name: "cross no fail error x", cat: "Status" },
     Emoji { glyph: "⚠️", name: "warning caution alert", cat: "Status" },
     Emoji { glyph: "⭐", name: "star favorite", cat: "Status" },
     Emoji { glyph: "❤️", name: "heart love", cat: "Status" },
@@ -90,11 +90,12 @@ pub const EMOJIS: &[Emoji] = &[
     Emoji { glyph: "🤚", name: "raised hand stop", cat: "Hands" },
     Emoji { glyph: "✋", name: "hand stop high five", cat: "Hands" },
     Emoji { glyph: "🖐️", name: "open hand fingers", cat: "Hands" },
-    Emoji { glyph: "👌", name: "ok perfect", cat: "Hands" },
+    Emoji { glyph: "👌", name: "ok perfect nice", cat: "Hands" },
     Emoji { glyph: "🤌", name: "pinched fingers", cat: "Hands" },
     Emoji { glyph: "🤏", name: "small tiny", cat: "Hands" },
     Emoji { glyph: "✌️", name: "peace victory", cat: "Hands" },
     Emoji { glyph: "🤞", name: "fingers crossed luck", cat: "Hands" },
+    Emoji { glyph: "🖕", name: "fuck middle finger", cat: "Hands" },
     Emoji { glyph: "🤟", name: "love you hand", cat: "Hands" },
     Emoji { glyph: "🤘", name: "rock on metal", cat: "Hands" },
     Emoji { glyph: "🤙", name: "call me", cat: "Hands" },
@@ -1207,16 +1208,12 @@ pub const EMOJIS: &[Emoji] = &[
 
     // Activities
     Emoji { glyph: "💘", name: "heart with arrow", cat: "Activities" },
-    Emoji { glyph: "💙", name: "blue heart", cat: "Activities" },
-    Emoji { glyph: "💚", name: "green heart", cat: "Activities" },
-    Emoji { glyph: "💛", name: "yellow heart", cat: "Activities" },
-    Emoji { glyph: "💜", name: "purple heart", cat: "Activities" },
     Emoji { glyph: "💝", name: "heart with ribbon", cat: "Activities" },
     Emoji { glyph: "💞", name: "revolving hearts", cat: "Activities" },
 
     // Animals
     Emoji { glyph: "💟", name: "heart decoration", cat: "Animals" },
-
+//
     // Objects
     Emoji { glyph: "💠", name: "diamond shape with a dot inside", cat: "Objects" },
 
@@ -1757,10 +1754,6 @@ pub const EMOJIS: &[Emoji] = &[
     // Objects
     Emoji { glyph: "🟰", name: "heavy equals sign", cat: "Objects" },
 
-    // Activities
-    Emoji { glyph: "🤍", name: "white heart", cat: "Activities" },
-    Emoji { glyph: "🤎", name: "brown heart", cat: "Activities" },
-
     // People
     Emoji { glyph: "🤐", name: "zipper mouth face", cat: "People" },
     Emoji { glyph: "🤑", name: "money mouth face", cat: "People" },
@@ -2060,9 +2053,6 @@ pub const EMOJIS: &[Emoji] = &[
     // Nature
     Emoji { glyph: "🧠", name: "brain", cat: "Nature" },
 
-    // Activities
-    Emoji { glyph: "🧡", name: "orange heart", cat: "Activities" },
-
     // Symbols
     Emoji { glyph: "🧢", name: "billed cap", cat: "Symbols" },
 
@@ -2120,11 +2110,6 @@ pub const EMOJIS: &[Emoji] = &[
     Emoji { glyph: "🩲", name: "briefs", cat: "Symbols" },
     Emoji { glyph: "🩳", name: "shorts", cat: "Symbols" },
     Emoji { glyph: "🩴", name: "thong sandal", cat: "Symbols" },
-
-    // Activities
-    Emoji { glyph: "🩵", name: "light blue heart", cat: "Activities" },
-    Emoji { glyph: "🩶", name: "grey heart", cat: "Activities" },
-    Emoji { glyph: "🩷", name: "pink heart", cat: "Activities" },
 
     // Symbols
     Emoji { glyph: "🩸", name: "drop of blood", cat: "Symbols" },
@@ -2602,7 +2587,7 @@ pub const EMOJIS: &[Emoji] = &[
     Emoji { glyph: "🧑‍🚀", name: "astronaut space", cat: "People" },
     Emoji { glyph: "🧑‍🍳", name: "cook chef", cat: "People" },
     Emoji { glyph: "🧑‍🔬", name: "scientist lab", cat: "People" },
-    Emoji { glyph: "🧑‍🎨", name: "artist painter", cat: "People" },
+    Emoji { glyph: "🧑‍🎨", name: "artist painter", cat: "People" },//
     Emoji { glyph: "🧑‍🚒", name: "firefighter", cat: "People" },
     Emoji { glyph: "🧑‍✈️", name: "pilot", cat: "People" },
     Emoji { glyph: "🧑‍🌾", name: "farmer", cat: "People" },
@@ -2618,8 +2603,6 @@ pub const EMOJIS: &[Emoji] = &[
 
     // People
     Emoji { glyph: "👩‍❤️‍👨", name: "couple woman man heart", cat: "People" },
-    Emoji { glyph: "👨‍❤️‍👨", name: "couple men heart", cat: "People" },
-    Emoji { glyph: "👩‍❤️‍👩", name: "couple women heart", cat: "People" },
     Emoji { glyph: "🧑‍🦽", name: "person manual wheelchair", cat: "People" },
     Emoji { glyph: "🧑‍🦼", name: "person motorized wheelchair", cat: "People" },
     Emoji { glyph: "🧑‍🦯", name: "person white cane", cat: "People" },

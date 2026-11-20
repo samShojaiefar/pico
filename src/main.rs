@@ -1,3 +1,4 @@
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::{
@@ -26,6 +27,7 @@ use wry::WebViewBuilder;
 
 mod emoji;
 mod state;
+mod welcome;
 
 use emoji::EMOJIS;
 use state::State;
@@ -35,6 +37,7 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 const DOUBLE_TAP: Duration = Duration::from_millis(400);
 
 const OPEN_PICKER_ID: &str = "open-picker";
+const HELP_ID: &str = "how-it-works";
 const QUIT_ID: &str = "quit-pico";
 
 // ───────────────────────────── arguments ─────────────────────────────
@@ -52,7 +55,9 @@ fn arg_value(flag: &str) -> Option<String> {
 fn load_tray_icon() -> Result<Icon, Box<dyn Error>> {
     let bytes = include_bytes!("../assets/icon.ico");
 
-    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico)?.into_rgba8();
+    let image =
+        image::load_from_memory_with_format(bytes, image::ImageFormat::Ico)?
+            .into_rgba8();
 
     let (width, height) = image.dimensions();
 
@@ -65,22 +70,38 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Picker subprocess mode.
     // This process does not create another tray icon.
     if env::args().any(|a| a == "--picker") {
-        let prefix = arg_value("--prefix").unwrap_or_else(|| "/".to_string());
+        let prefix = arg_value("--prefix")
+            .unwrap_or_else(|| "/".to_string());
 
         return run_picker(&prefix);
     }
 
-    let trigger = arg_value("--trigger").unwrap_or_else(|| "//".to_string());
+    // Welcome screen subprocess mode.
+    if env::args().any(|a| a == "--welcome") {
+        return welcome::run();
+    }
 
-    let chars: Vec<String> = trigger.chars().map(|c| c.to_string()).collect();
+    let trigger = arg_value("--trigger")
+        .unwrap_or_else(|| "//".to_string());
+
+    let chars: Vec<String> = trigger
+        .chars()
+        .map(|c| c.to_string())
+        .collect();
 
     if chars.is_empty() || chars.len() > 2 {
-        eprintln!("--trigger must be 1 or 2 characters, e.g. --trigger \";;\"");
+        eprintln!(
+            "--trigger must be 1 or 2 characters, e.g. --trigger \";;\""
+        );
         std::process::exit(2);
     }
 
+    // Show the welcome screen only on the first launch.
+    welcome::show_if_needed()?;
+
     // Tao event loop is required by tray-icon on Windows.
-    let event_loop: EventLoop<String> = EventLoopBuilder::with_user_event().build();
+    let event_loop: EventLoop<String> =
+        EventLoopBuilder::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
 
@@ -92,11 +113,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Build tray menu.
     let menu = Menu::new();
 
-    let open_item = MenuItem::with_id(OPEN_PICKER_ID, "Open Emoji Picker", true, None);
+    let open_item =
+        MenuItem::with_id(OPEN_PICKER_ID, "Open Emoji Picker", true, None);
 
-    let quit_item = MenuItem::with_id(QUIT_ID, "Quit Pico", true, None);
+    let help_item =
+        MenuItem::with_id(HELP_ID, "How it works", true, None);
+
+    let quit_item =
+        MenuItem::with_id(QUIT_ID, "Quit Pico", true, None);
 
     menu.append(&open_item)?;
+    menu.append(&help_item)?;
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&quit_item)?;
 
@@ -124,6 +151,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 fire(0, "/".to_string());
             }
 
+            Event::UserEvent(id) if id == HELP_ID => {
+                if let Ok(exe) = env::current_exe() {
+                    let _ = Command::new(exe)
+                        .arg("--welcome")
+                        .spawn();
+                }
+            }
+
             Event::UserEvent(id) if id == QUIT_ID => {
                 *control_flow = ControlFlow::Exit;
             }
@@ -140,15 +175,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn starts_ok(prev: Option<&str>) -> bool {
     match prev.and_then(|p| p.chars().next()) {
         None => true,
-        Some(c) => c.is_whitespace() || !(c.is_alphanumeric() || c == ':' || c == '.'),
+        Some(c) => {
+            c.is_whitespace() || !(c.is_alphanumeric() || c == ':' || c == '.')
+        }
     }
 }
+
 
 fn run_listener(trigger: Vec<String>) {
     let prefix: String = trigger.concat();
     let n = trigger.len();
 
-    let (mut ctrl, mut alt, mut meta) = (false, false, false);
+    let (mut right_alt, mut ctrl, mut alt, mut meta) =
+        (false, false, false, false);
 
     let mut progress = 0usize;
     let mut started = Instant::now();
@@ -156,18 +195,25 @@ fn run_listener(trigger: Vec<String>) {
     let mut prev: Option<String> = None;
 
     let result = listen(move |event| {
-        // Track modifiers first, even while busy.
         match event.event_type {
             EventType::KeyPress(k) => match k {
+                K::AltGr => {
+                    right_alt = true;
+                    alt = true;
+                }
+                K::Alt => alt = true,
                 K::ControlLeft | K::ControlRight => ctrl = true,
-                K::Alt | K::AltGr => alt = true,
                 K::MetaLeft | K::MetaRight => meta = true,
                 _ => {}
             },
 
             EventType::KeyRelease(k) => match k {
+                K::AltGr => {
+                    right_alt = false;
+                    alt = false;
+                }
+                K::Alt => alt = false,
                 K::ControlLeft | K::ControlRight => ctrl = false,
-                K::Alt | K::AltGr => alt = false,
                 K::MetaLeft | K::MetaRight => meta = false,
                 _ => {}
             },
@@ -185,6 +231,13 @@ fn run_listener(trigger: Vec<String>) {
             return;
         };
 
+        // Right Alt + / opens Pico.
+        if right_alt && key == K::Slash {
+            progress = 0;
+            prev = None;
+            fire(1, "/".to_string());
+            return;
+        }
         if matches!(
             key,
             K::ControlLeft
@@ -200,14 +253,7 @@ fn run_listener(trigger: Vec<String>) {
             return;
         }
 
-        // Ctrl + Alt + E opens the picker.
-        if ctrl && alt && key == K::KeyE {
-            progress = 0;
-            fire(0, "/".to_string());
-            return;
-        }
-
-        // Ignore Ctrl/Cmd/Alt combinations.
+        // Ignore other modifier combinations.
         if ctrl || alt || meta {
             progress = 0;
             prev = None;
@@ -218,7 +264,8 @@ fn run_listener(trigger: Vec<String>) {
         let typed = ch.as_deref();
 
         if progress > 0
-            && (started.elapsed() > DOUBLE_TAP || typed != Some(trigger[progress].as_str()))
+            && (started.elapsed() > DOUBLE_TAP
+                || typed != Some(trigger[progress].as_str()))
         {
             progress = 0;
         }
@@ -245,7 +292,9 @@ fn run_listener(trigger: Vec<String>) {
 
     if let Err(e) = result {
         eprintln!("pico: could not start key listener: {e:?}");
-        eprintln!("(macOS: grant Accessibility + Input Monitoring to your terminal/app)");
+        eprintln!(
+            "(macOS: grant Accessibility + Input Monitoring to your terminal/app)"
+        );
     }
 }
 
@@ -268,14 +317,19 @@ fn fire(erase: usize, prefix: String) {
     });
 }
 
-fn pick_and_insert(erase: usize, prefix: &str) -> Result<(), Box<dyn Error>> {
+fn pick_and_insert(
+    erase: usize,
+    prefix: &str,
+) -> Result<(), Box<dyn Error>> {
     let out = Command::new(env::current_exe()?)
         .arg("--picker")
         .arg("--prefix")
         .arg(prefix)
         .output()?;
 
-    let reply = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let reply = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .to_string();
 
     // "pick:<emoji>" inserts the emoji.
     // "cancel" removes the trigger without inserting anything.
@@ -308,13 +362,21 @@ const WIN_W: f64 = 280.0;
 const WIN_H: f64 = 360.0;
 
 fn js_str(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    )
 }
 
 fn build_html(prefix: &str, state: &State) -> String {
     let data = EMOJIS
         .iter()
-        .map(|e| format!("[\"{}\",\"{}\",\"{}\"]", e.glyph, e.name, e.cat))
+        .map(|e| {
+            format!(
+                "[\"{}\",\"{}\",\"{}\"]",
+                e.glyph, e.name, e.cat
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
 
@@ -324,7 +386,8 @@ fn build_html(prefix: &str, state: &State) -> String {
 }
 
 fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
-    let event_loop: EventLoop<String> = EventLoopBuilder::with_user_event().build();
+    let event_loop: EventLoop<String> =
+        EventLoopBuilder::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
 
@@ -382,7 +445,10 @@ fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
         match event {
             Event::UserEvent(msg) => {
                 if let Some(list) = msg.strip_prefix("favs:") {
-                    let favs: Vec<&str> = list.split('|').filter(|s| !s.is_empty()).collect();
+                    let favs: Vec<&str> = list
+                        .split('|')
+                        .filter(|s| !s.is_empty())
+                        .collect();
 
                     state.set_favs(&favs);
                     state.save();
@@ -428,96 +494,311 @@ fn run_picker(prefix: &str) -> Result<(), Box<dyn Error>> {
 
 // ───────────────────────────── HTML ─────────────────────────────
 
-const HTML: &str = r##"<!doctype html>
+const HTML: &str = r##"
+<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
   :root {
-    --bg: rgba(255,255,255,.99); --fg: #111113; --dim: #8e8e93; --line: rgba(0,0,0,.08);
-    --sel: rgba(0,0,0,.065); --hover: rgba(0,0,0,.035); --ci-on: rgba(0,0,0,.08);
+    --bg: rgba(255,255,255,.99);
+    --fg: #111113;
+    --dim: #8e8e93;
+    --line: rgba(0,0,0,.08);
+    --sel: rgba(0,0,0,.065);
+    --hover: rgba(0,0,0,.035);
+    --ci-on: rgba(0,0,0,.08);
   }
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-    -webkit-font-smoothing: antialiased; user-select: none; cursor: default; }
-  #panel { height: 100%; padding: 12px 12px 0; display: flex; flex-direction: column;
-    background: var(--bg); border: 1px solid var(--line); border-radius: 14px; color: var(--fg); }
+
+  :root {
+    color-scheme: light;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+      "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+  }
+
+  #panel {
+    height: 100%;
+    padding: 12px 12px 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--fg);
+  }
 
   /* header */
-  #head { position: relative; height: 24px; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 4px; margin-bottom: 6px; }
-  #title { font-size: 11px; font-weight: 600; }
-  #hint { font-size: 10px; color: var(--dim); }
-  #typed { display: none; align-items: center; font-size: 15px; font-weight: 600; letter-spacing: -.1px; }
-  #typed .p { color: var(--dim); font-weight: 400; margin-right: 1px; }
-  .caret { width: 1.5px; height: 16px; background: var(--fg); margin-left: 1px; animation: blink 1s steps(1) infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
-  #q { position: absolute; inset: 0; width: 100%; opacity: 0; border: 0; outline: 0; background: transparent; }
+  #head {
+    position: relative;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 4px;
+    margin-bottom: 6px;
+  }
+
+  #title {
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  #hint {
+    font-size: 10px;
+    color: var(--dim);
+  }
+
+  #typed {
+    display: none;
+    align-items: center;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -.1px;
+  }
+
+  #typed .p {
+    color: var(--dim);
+    font-weight: 400;
+    margin-right: 1px;
+  }
+
+  .caret {
+    width: 1.5px;
+    height: 16px;
+    background: var(--fg);
+    margin-left: 1px;
+    animation: blink 1s steps(1) infinite;
+  }
+
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+
+  #q {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    opacity: 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+  }
 
   /* emoji grid */
-  #body { flex: 1; overflow-y: auto; scrollbar-width: none; padding-bottom: 8px; }
-  #body::-webkit-scrollbar { display: none; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); grid-auto-rows: 84px; gap: 6px; }
-  .cell { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
-    border-radius: 12px; }
-  .cell:hover { background: var(--hover); }
-  .cell.sel { background: var(--sel); }
-  .glyph { font-size: 34px; line-height: 1.1;
-    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
-  .lbl { margin-top: 5px; font-size: 11px; color: var(--fg); max-width: 100%; padding: 0 6px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .star { position: absolute; top: 6px; right: 9px; font-size: 12px; line-height: 1; color: var(--dim); opacity: .6; }
-  .star.on { color: var(--fg); opacity: .75; }
-  .empty { color: var(--dim); font-size: 12px; padding: 16px 6px; }
+  #body {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: none;
+    padding-bottom: 8px;
+  }
+
+  #body::-webkit-scrollbar {
+    display: none;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-auto-rows: 84px;
+    gap: 6px;
+  }
+
+  .cell {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+  }
+
+  .cell:hover {
+    background: var(--hover);
+  }
+
+  .cell.sel {
+    background: var(--sel);
+  }
+
+  .glyph {
+    font-size: 34px;
+    line-height: 1.1;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji",
+      "Noto Color Emoji", sans-serif;
+  }
+
+  .lbl {
+    margin-top: 5px;
+    font-size: 11px;
+    color: var(--fg);
+    max-width: 100%;
+    padding: 0 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .star {
+    position: absolute;
+    top: 6px;
+    right: 9px;
+    font-size: 12px;
+    line-height: 1;
+    color: var(--dim);
+    opacity: .6;
+  }
+
+  .star.on {
+    color: var(--fg);
+    opacity: .75;
+  }
+
+  .empty {
+    color: var(--dim);
+    font-size: 12px;
+    padding: 16px 6px;
+  }
 
   /* category bar */
-  #cats { display: flex; justify-content: space-between; align-items: center; height: 40px;
-    margin: 0 -12px; padding: 0 10px; border-top: 1px solid var(--line); }
-  .ci { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;
-    border-radius: 7px; font-size: 14px; line-height: 1; filter: grayscale(1); opacity: .6; }
-  .ci:hover { background: var(--hover); opacity: .9; }
-  .ci.on { background: var(--ci-on); opacity: 1; }
+  #cats {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 40px;
+    margin: 0 -12px;
+    padding: 0 10px;
+    border-top: 1px solid var(--line);
+  }
+
+  .ci {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 7px;
+    font-size: 14px;
+    line-height: 1;
+    filter: grayscale(1);
+    opacity: .6;
+  }
+
+  .ci:hover {
+    background: var(--hover);
+    opacity: .9;
+  }
+
+  .ci.on {
+    background: var(--ci-on);
+    opacity: 1;
+  }
 
   /* footer */
-  #foot { display: grid; grid-template-columns: 1fr 1fr 1fr; height: 34px; align-items: center;
-    margin: 0 -12px; border-top: 1px solid var(--line); font-size: 10.5px; color: var(--dim); text-align: center; }
-  #foot > div { border-left: 1px solid var(--line); line-height: 14px; }
-  #foot > div:first-child { border-left: 0; }
-  #foot b { color: var(--fg); font-weight: 600; margin-right: 3px; }
+  #foot {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    height: 34px;
+    align-items: center;
+    margin: 0 -12px;
+    border-top: 1px solid var(--line);
+    font-size: 10.5px;
+    color: var(--dim);
+    text-align: center;
+  }
+
+  #foot > div {
+    border-left: 1px solid var(--line);
+    line-height: 14px;
+  }
+
+  #foot > div:first-child {
+    border-left: 0;
+  }
+
+  #foot b {
+    color: var(--fg);
+    font-weight: 600;
+    margin-right: 3px;
+  }
 </style>
 </head>
 <body>
 <div id="panel">
   <div id="head">
-    <span id="title"></span><span id="hint">Shift + ← → to reorder</span>
-    <span id="typed"><span class="p" id="pfx"></span><span id="typedtext"></span><span class="caret"></span></span>
+    <span id="title"></span>
+    <span id="hint">Shift + ← → to reorder</span>
+
+    <span id="typed">
+      <span class="p" id="pfx"></span>
+      <span id="typedtext"></span>
+      <span class="caret"></span>
+    </span>
+
     <input id="q" autocomplete="off" spellcheck="false" autofocus>
   </div>
+
   <div id="body"></div>
   <div id="cats"></div>
+
   <div id="foot">
     <div><b>Enter</b>Insert</div>
     <div><b>Space</b><span id="favlabel">Favorite</span></div>
     <div><b>Tab</b>Categories</div>
   </div>
 </div>
+
 <script>
   const DATA = __DATA__;
   const STATE = __STATE__;
   const PREFIX = __PREFIX__;
+
   const COLS = 3;
+
   const CATS = ['Favorites', ...new Set(DATA.map(d => d[2]))];
-  const ICON = { Favorites: '☆', Status: '✅', Faces: '😀', Hands: '👋', Animals: '🐻', Nature: '🌿',
-                 Food: '🍎', Activities: '⚽', Travel: '🚗', Objects: '💡', Symbols: '🔣' };
+
+  const ICON = {
+    Favorites: '☆',
+    Status: '✅',
+    Faces: '😀',
+    Hands: '👋',
+    Animals: '🐻',
+    Nature: '🌿',
+    Food: '🍎',
+    Activities: '⚽',
+    Travel: '🚗',
+    Objects: '💡',
+    Symbols: '🔣'
+  };
 
   const $ = id => document.getElementById(id);
-  const qEl = $('q'), catsEl = $('cats'), bodyEl = $('body');
+
+  const qEl = $('q');
+  const catsEl = $('cats');
+  const bodyEl = $('body');
+
   const mk = (tag, cls, text) => {
     const e = document.createElement(tag);
     e.className = cls;
-    if (text != null) e.textContent = text;
+
+    if (text != null) {
+      e.textContent = text;
+    }
+
     return e;
   };
 
@@ -526,12 +807,18 @@ const HTML: &str = r##"<!doctype html>
 
   const uniq = arr => {
     const s = new Set();
-    return arr.filter(d => s.has(d[0]) ? false : (s.add(d[0]), true));
+
+    return arr.filter(d =>
+      s.has(d[0]) ? false : (s.add(d[0]), true)
+    );
   };
 
   const byGlyph = {};
+
   DATA.forEach(d => {
-    if (!(d[0] in byGlyph)) byGlyph[d[0]] = d;
+    if (!(d[0] in byGlyph)) {
+      byGlyph[d[0]] = d;
+    }
   });
 
   // Ordered favorites.
@@ -540,6 +827,7 @@ const HTML: &str = r##"<!doctype html>
     .sort((a, b) => STATE[a][1] - STATE[b][1]);
 
   const isFav = g => FAVS.includes(g);
+
   const favRank = g => {
     const i = FAVS.indexOf(g);
     return i < 0 ? 1e9 : i;
@@ -547,7 +835,10 @@ const HTML: &str = r##"<!doctype html>
 
   const saveFavs = () => send('favs:' + FAVS.join('|'));
 
-  let items = [], sel = 0, selGlyph = null;
+  let items = [];
+  let sel = 0;
+  let selGlyph = null;
+
   let catIdx = FAVS.length ? 0 : 1;
 
   $('pfx').textContent = PREFIX;
@@ -567,10 +858,14 @@ const HTML: &str = r##"<!doctype html>
             t.startsWith(q) ? 1 :
             t.includes(q) ? 2 : 9;
 
-          if (s < best) best = s;
+          if (s < best) {
+            best = s;
+          }
         }
 
-        if (best < 9) out.push({ d, i, s: best });
+        if (best < 9) {
+          out.push({ d, i, s: best });
+        }
       });
 
       // Exact names first, then prefix matches.
@@ -583,7 +878,9 @@ const HTML: &str = r##"<!doctype html>
 
       items = uniq(out.map(o => o.d));
     } else if (CATS[catIdx] === 'Favorites') {
-      const favs = FAVS.map(g => byGlyph[g]).filter(Boolean);
+      const favs = FAVS
+        .map(g => byGlyph[g])
+        .filter(Boolean);
 
       const rest = uniq(
         DATA.map((d, i) => ({ d, i }))
@@ -610,7 +907,9 @@ const HTML: &str = r##"<!doctype html>
   }
 
   function pick(i) {
-    if (items[i]) send('pick:' + items[i][0]);
+    if (items[i]) {
+      send('pick:' + items[i][0]);
+    }
   }
 
   function toggleFav(i) {
@@ -629,7 +928,9 @@ const HTML: &str = r##"<!doctype html>
     const i = FAVS.indexOf(g);
     const j = i + dir;
 
-    if (i < 0 || j < 0 || j >= FAVS.length) return;
+    if (i < 0 || j < 0 || j >= FAVS.length) {
+      return;
+    }
 
     [FAVS[i], FAVS[j]] = [FAVS[j], FAVS[i]];
 
@@ -642,7 +943,11 @@ const HTML: &str = r##"<!doctype html>
 
     if (selGlyph) {
       const k = items.findIndex(d => d[0] === selGlyph);
-      if (k >= 0) sel = k;
+
+      if (k >= 0) {
+        sel = k;
+      }
+
       selGlyph = null;
     }
 
@@ -707,6 +1012,7 @@ const HTML: &str = r##"<!doctype html>
     }
 
     const selected = bodyEl.querySelector('.sel');
+
     if (selected) {
       selected.scrollIntoView({ block: 'nearest' });
     }
@@ -805,13 +1111,14 @@ const HTML: &str = r##"<!doctype html>
         break;
 
       case ' ':
-        if (n) toggleFav(sel);
+        if (n) {
+          toggleFav(sel);
+        }
         break;
 
       default:
         handled = false;
     }
-
     if (handled) {
       e.preventDefault();
       render();
@@ -822,4 +1129,5 @@ const HTML: &str = r##"<!doctype html>
   qEl.focus();
 </script>
 </body>
-</html>"##;
+</html>
+"##;

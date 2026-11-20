@@ -1,4 +1,3 @@
-
 use std::{collections::HashMap, env, fs, path::PathBuf};
 
 #[derive(Default)]
@@ -19,29 +18,59 @@ fn path() -> Option<PathBuf> {
     base.map(|b| b.join("pico").join("state.tsv"))
 }
 
+fn welcome_path() -> Option<PathBuf> {
+    path().map(|p| p.with_file_name("welcome_seen"))
+}
+
 impl State {
+    /// True once the welcome screen has been completed.
+    /// Only checks that the marker exists, so markers written by older
+    /// versions ("seen") still count. If there is no config dir, don't nag.
+    pub fn has_seen_welcome() -> bool {
+        welcome_path().map_or(true, |p| p.exists())
+    }
+
+    pub fn mark_welcome_seen() {
+        let Some(p) = welcome_path() else { return };
+
+        if let Some(dir) = p.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+
+        let _ = fs::write(p, "1");
+    }
+
     pub fn load() -> Self {
         let mut map = HashMap::new();
+
         if let Some(text) = path().and_then(|p| fs::read_to_string(p).ok()) {
             for line in text.lines() {
                 let mut it = line.split('\t');
+
                 if let (Some(g), Some(c), Some(f)) = (it.next(), it.next(), it.next()) {
-                    map.insert(g.to_string(), (c.parse().unwrap_or(0), f.parse().unwrap_or(0)));
+                    map.insert(
+                        g.to_string(),
+                        (c.parse().unwrap_or(0), f.parse().unwrap_or(0)),
+                    );
                 }
             }
         }
+
         State { map }
     }
 
     pub fn save(&self) {
         let Some(p) = path() else { return };
+
         if let Some(dir) = p.parent() {
             let _ = fs::create_dir_all(dir);
         }
+
         let mut out = String::new();
         for (g, (c, f)) in &self.map {
             out.push_str(&format!("{g}\t{c}\t{f}\n"));
         }
+
         let _ = fs::write(p, out);
     }
 
@@ -50,6 +79,7 @@ impl State {
         for v in self.map.values_mut() {
             v.1 = 0;
         }
+
         for (i, g) in favs.iter().enumerate() {
             self.map.entry(g.to_string()).or_insert((0, 0)).1 = (i + 1) as u32;
         }
@@ -68,6 +98,7 @@ impl State {
             .map(|(g, (c, f))| format!("\"{}\":[{},{}]", g, c, f))
             .collect::<Vec<_>>()
             .join(",");
+
         format!("{{{items}}}")
     }
 }
