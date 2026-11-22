@@ -66,13 +66,39 @@ fn arg_value(flag: &str) -> Option<String> {
 fn load_tray_icon() -> Result<Icon, Box<dyn Error>> {
     let bytes = include_bytes!("../assets/icon.ico");
 
-    let image =
-        image::load_from_memory_with_format(bytes, image::ImageFormat::Ico)?
-            .into_rgba8();
+    let image = image::load_from_memory_with_format(bytes, image::ImageFormat::Ico)?.into_rgba8();
 
     let (width, height) = image.dimensions();
 
     Ok(Icon::from_rgba(image.into_raw(), width, height)?)
+}
+
+#[cfg(target_os = "windows")]
+fn enable_startup() {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let Ok(exe) = env::current_exe() else {
+        return;
+    };
+
+    let executable = format!("\"{}\"", exe.display());
+
+    let _ = Command::new("reg.exe")
+        .args([
+            "add",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "Pico",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &executable,
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 }
 
 // ───────────────────────────── main ─────────────────────────────
@@ -87,19 +113,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     if env::args().any(|a| a == "--welcome") {
         return welcome::run();
     }
+    #[cfg(target_os = "windows")]
+    enable_startup();
+    let trigger = arg_value("--trigger").unwrap_or_else(|| "//".to_string());
 
-    let trigger = arg_value("--trigger")
-        .unwrap_or_else(|| "//".to_string());
-
-    let chars: Vec<String> = trigger
-        .chars()
-        .map(|c| c.to_string())
-        .collect();
+    let chars: Vec<String> = trigger.chars().map(|c| c.to_string()).collect();
 
     if chars.is_empty() || chars.len() > 2 {
-        eprintln!(
-            "--trigger must be 1 or 2 characters, e.g. --trigger \";;\""
-        );
+        eprintln!("--trigger must be 1 or 2 characters, e.g. --trigger \";;\"");
         std::process::exit(2);
     }
 
@@ -107,8 +128,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     welcome::show_if_needed()?;
 
     // Tao event loop is required by tray-icon on Windows.
-    let event_loop: EventLoop<String> =
-        EventLoopBuilder::with_user_event().build();
+    let event_loop: EventLoop<String> = EventLoopBuilder::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
 
@@ -120,14 +140,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Build tray menu.
     let menu = Menu::new();
 
-    let open_item =
-        MenuItem::with_id(OPEN_PICKER_ID, "Open Emoji Picker", true, None);
+    let open_item = MenuItem::with_id(OPEN_PICKER_ID, "Open Emoji Picker", true, None);
 
-    let help_item =
-        MenuItem::with_id(HELP_ID, "How it works", true, None);
+    let help_item = MenuItem::with_id(HELP_ID, "How it works", true, None);
 
-    let quit_item =
-        MenuItem::with_id(QUIT_ID, "Quit Pico", true, None);
+    let quit_item = MenuItem::with_id(QUIT_ID, "Quit Pico", true, None);
 
     menu.append(&open_item)?;
     menu.append(&help_item)?;
@@ -163,9 +180,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
             Event::UserEvent(id) if id == HELP_ID => {
                 if let Ok(exe) = env::current_exe() {
-                    let _ = Command::new(exe)
-                        .arg("--welcome")
-                        .spawn();
+                    let _ = Command::new(exe).arg("--welcome").spawn();
                 }
             }
 
@@ -185,19 +200,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn starts_ok(prev: Option<&str>) -> bool {
     match prev.and_then(|p| p.chars().next()) {
         None => true,
-        Some(c) => {
-            c.is_whitespace() || !(c.is_alphanumeric() || c == ':' || c == '.')
-        }
+        Some(c) => c.is_whitespace() || !(c.is_alphanumeric() || c == ':' || c == '.'),
     }
 }
-
 
 fn run_listener(trigger: Vec<String>) {
     let prefix: String = trigger.concat();
     let n = trigger.len();
 
-    let (mut right_alt, mut ctrl, mut alt, mut meta) =
-        (false, false, false, false);
+    let (mut right_alt, mut ctrl, mut alt, mut meta) = (false, false, false, false);
 
     let mut progress = 0usize;
     let mut started = Instant::now();
@@ -274,8 +285,7 @@ fn run_listener(trigger: Vec<String>) {
         let typed = ch.as_deref();
 
         if progress > 0
-            && (started.elapsed() > DOUBLE_TAP
-                || typed != Some(trigger[progress].as_str()))
+            && (started.elapsed() > DOUBLE_TAP || typed != Some(trigger[progress].as_str()))
         {
             progress = 0;
         }
@@ -302,9 +312,7 @@ fn run_listener(trigger: Vec<String>) {
 
     if let Err(e) = result {
         eprintln!("pico: could not start key listener: {e:?}");
-        eprintln!(
-            "(macOS: grant Accessibility + Input Monitoring to your terminal/app)"
-        );
+        eprintln!("(macOS: grant Accessibility + Input Monitoring to your terminal/app)");
     }
 }
 
@@ -414,21 +422,13 @@ const WIN_W: f64 = 280.0;
 const WIN_H: f64 = 360.0;
 
 fn js_str(s: &str) -> String {
-    format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\").replace('"', "\\\"")
-    )
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn build_html(prefix: &str, state: &State) -> String {
     let data = EMOJIS
         .iter()
-        .map(|e| {
-            format!(
-                "[\"{}\",\"{}\",\"{}\"]",
-                e.glyph, e.name, e.cat
-            )
-        })
+        .map(|e| format!("[\"{}\",\"{}\",\"{}\"]", e.glyph, e.name, e.cat))
         .collect::<Vec<_>>()
         .join(",");
 
@@ -438,8 +438,7 @@ fn build_html(prefix: &str, state: &State) -> String {
 }
 
 fn run_picker() -> Result<(), Box<dyn Error>> {
-    let event_loop: EventLoop<String> =
-        EventLoopBuilder::with_user_event().build();
+    let event_loop: EventLoop<String> = EventLoopBuilder::with_user_event().build();
 
     let proxy = event_loop.create_proxy();
 
@@ -504,10 +503,7 @@ fn run_picker() -> Result<(), Box<dyn Error>> {
                 } else if msg == "quit" {
                     *control_flow = ControlFlow::Exit;
                 } else if let Some(list) = msg.strip_prefix("favs:") {
-                    let favs: Vec<&str> = list
-                        .split('|')
-                        .filter(|s| !s.is_empty())
-                        .collect();
+                    let favs: Vec<&str> = list.split('|').filter(|s| !s.is_empty()).collect();
 
                     state.set_favs(&favs);
                     state.save();
@@ -545,12 +541,7 @@ fn run_picker() -> Result<(), Box<dyn Error>> {
     })
 }
 
-fn show(
-    window: &Window,
-    target: &EventLoopWindowTarget<String>,
-    webview: &WebView,
-    prefix: &str,
-) {
+fn show(window: &Window, target: &EventLoopWindowTarget<String>, webview: &WebView, prefix: &str) {
     // Horizontally centered, in the upper part of the screen.
     if let Some(m) = target.primary_monitor() {
         let scale = m.scale_factor();
