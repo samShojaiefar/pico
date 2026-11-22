@@ -2,17 +2,15 @@
 
 **A fast, lightweight emoji picker for Windows.**
 
-Pico lets you quickly find and insert emojis without interrupting your workflow. Open it with a keyboard shortcut and get back to what you're doing.
+Pico lets you quickly find and insert emojis without interrupting your workflow. Open it with just `//` and get back to what you're doing.
 
-<p align="center">
-  <img src="assets/icon.png" width="120" alt="Pico logo">
-</p>
+
 
 ## Features
 
 -  **Fast:** Optimized for quick startup and responsive interaction.
 -  **Improved rendering:** A cleaner rendering style.
--  **Keyboard shortcut:** Open Pico using `Right Alt + /`.
+-  **Keyboard shortcut:** Open Pico using type `//` everywhere!.
 -  **Lightweight:** Built with Rust.
 -  **System tray:** Runs in the Windows system tray.
 -  **Automatic startup:** Pico automatically launches when you start Windows.
